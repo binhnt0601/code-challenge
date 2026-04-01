@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Toaster, toast } from "sonner";
+
 import {
   formatNumber,
   formatRate,
@@ -11,22 +12,11 @@ import {
   sanitizeNumericInput,
 } from "./utils";
 
-type PriceItem = {
-  currency: string;
-  price: number;
-  date?: string;
-};
-
-type TokenOption = {
-  currency: string;
-  price: number;
-  icon: string;
-};
-
-export const PRICE_URL = "https://interview.switcheo.com/prices.json";
-export const MAX_INPUT_VALUE = 1_000_000_000_000;
-export const MAX_DECIMALS = 6;
-export const MAX_INPUT_LENGTH = 24;
+import { MAX_INPUT_VALUE, PRICE_URL } from "@constants";
+import { useTokenPrices } from "@hooks/useTokenPrices";
+import SwapPanel from "@components/SwapPanel";
+import SwapSummary from "@components/SwapSummary";
+import SwapModal from "@components/SwapModal";
 
 const formSchema = z.object({
   amount: z
@@ -45,18 +35,16 @@ const formSchema = z.object({
 
 type FormValues = z.infer<typeof formSchema>;
 
-const buildTokenIconUrl = (currency: string) =>
-  `https://raw.githubusercontent.com/Switcheo/token-icons/main/tokens/${currency}.svg`;
-
 export default function App() {
-  const [tokens, setTokens] = useState<TokenOption[]>([]);
-  const [fromToken, setFromToken] = useState<string>("ETH");
-  const [toToken, setToToken] = useState<string>("USDC");
-  const [loading, setLoading] = useState<boolean>(true);
-  const [amountInput, setAmountInput] = useState<string>("");
+  const { tokens, loading } = useTokenPrices();
+
+  const [fromToken, setFromToken] = useState("ETH");
+  const [toToken, setToToken] = useState("USDC");
+  const [amountInput, setAmountInput] = useState("");
   const [isConfirmModalOpen, setIsConfirmModalOpen] = useState(false);
   const [isCompletedModalOpen, setIsCompletedModalOpen] = useState(false);
   const [isProcessingSwap, setIsProcessingSwap] = useState(false);
+
   const warnedMaxRef = useRef(false);
 
   const {
@@ -67,95 +55,36 @@ export default function App() {
     reset,
   } = useForm<FormValues>({
     resolver: zodResolver(formSchema),
-    defaultValues: {
-      amount: "",
-    },
+    defaultValues: { amount: "" },
     mode: "onChange",
   });
 
-  useEffect(() => {
-    const fetchPrices = async () => {
-      try {
-        setLoading(true);
-
-        const response = await fetch(PRICE_URL);
-        const data: PriceItem[] = await response.json();
-
-        const latestByCurrency = new Map<string, PriceItem>();
-
-        for (const item of data) {
-          if (
-            !item.currency ||
-            typeof item.price !== "number" ||
-            Number.isNaN(item.price) ||
-            item.price <= 0
-          ) {
-            continue;
-          }
-
-          const existing = latestByCurrency.get(item.currency);
-
-          if (!existing) {
-            latestByCurrency.set(item.currency, item);
-            continue;
-          }
-
-          const existingDate = existing.date
-            ? new Date(existing.date).getTime()
-            : 0;
-          const currentDate = item.date ? new Date(item.date).getTime() : 0;
-
-          if (currentDate >= existingDate) {
-            latestByCurrency.set(item.currency, item);
-          }
-        }
-
-        const normalizedTokens: TokenOption[] = Array.from(
-          latestByCurrency.values()
-        )
-          .map((item) => ({
-            currency: item.currency,
-            price: item.price,
-            icon: buildTokenIconUrl(item.currency),
-          }))
-          .sort((a, b) => a.currency.localeCompare(b.currency));
-
-        setTokens(normalizedTokens);
-
-        const defaultFrom =
-          normalizedTokens.find((token) => token.currency === "ETH")
-            ?.currency ??
-          normalizedTokens[0]?.currency ??
+  const resolvedFromToken = useMemo(() => {
+    return tokens.find((token) => token.currency === fromToken)?.currency
+      ? fromToken
+      : tokens.find((token) => token.currency === "ETH")?.currency ??
+          tokens[0]?.currency ??
           "";
+  }, [tokens, fromToken]);
 
-        const defaultTo =
-          normalizedTokens.find((token) => token.currency === "USDC")
+  const resolvedToToken = useMemo(() => {
+    return tokens.find((token) => token.currency === toToken)?.currency
+      ? toToken
+      : tokens.find((token) => token.currency === "USDC")?.currency ??
+          tokens.find((token) => token.currency !== resolvedFromToken)
             ?.currency ??
-          normalizedTokens.find((token) => token.currency !== defaultFrom)
-            ?.currency ??
-          normalizedTokens[0]?.currency ??
+          tokens[0]?.currency ??
           "";
-
-        setFromToken(defaultFrom);
-        setToToken(defaultTo);
-      } catch {
-        toast.error("Failed to load token prices");
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchPrices();
-  }, []);
+  }, [tokens, toToken, resolvedFromToken]);
 
   const fromTokenData = useMemo(
-    () => tokens.find((token) => token.currency === fromToken),
-    [tokens, fromToken]
+    () => tokens.find((token) => token.currency === resolvedFromToken),
+    [tokens, resolvedFromToken]
   );
 
   const toTokenData = useMemo(
-    () => tokens.find((token) => token.currency === toToken),
-    [tokens, toToken]
+    () => tokens.find((token) => token.currency === resolvedToToken),
+    [tokens, resolvedToToken]
   );
 
   const numericAmount = useMemo(() => {
@@ -169,12 +98,19 @@ export default function App() {
   }, [fromTokenData, toTokenData]);
 
   const outputAmount = useMemo(() => {
-    if (!amountInput || numericAmount <= 0 || !rate) {
-      return 0;
-    }
-
+    if (!amountInput || numericAmount <= 0 || !rate) return 0;
     return numericAmount * rate;
   }, [amountInput, numericAmount, rate]);
+
+  const availableFromTokens = useMemo(
+    () => tokens.filter((token) => token.currency !== resolvedToToken),
+    [tokens, resolvedToToken]
+  );
+
+  const availableToTokens = useMemo(
+    () => tokens.filter((token) => token.currency !== resolvedFromToken),
+    [tokens, resolvedFromToken]
+  );
 
   const handleAmountChange = async (
     event: React.ChangeEvent<HTMLInputElement>
@@ -217,19 +153,19 @@ export default function App() {
     await trigger("amount");
   };
 
-  const swapTokens = () => {
-    if (fromToken === toToken) {
+  const handleSwapDirection = () => {
+    if (resolvedFromToken === resolvedToToken) {
       toast.warning("Tokens are already the same");
       return;
     }
 
-    setFromToken(toToken);
-    setToToken(fromToken);
+    setFromToken(resolvedToToken);
+    setToToken(resolvedFromToken);
     toast.success("Swap direction updated");
   };
 
   const onSubmit = async () => {
-    if (fromToken === toToken) {
+    if (resolvedFromToken === resolvedToToken) {
       toast.error("From token and to token must be different");
       return;
     }
@@ -259,9 +195,7 @@ export default function App() {
 
   const handleCloseCompletedModal = () => {
     setAmountInput("");
-    reset({
-      amount: "",
-    });
+    reset({ amount: "" });
     warnedMaxRef.current = false;
     setIsCompletedModalOpen(false);
   };
@@ -269,6 +203,7 @@ export default function App() {
   return (
     <>
       <Toaster richColors position="top-right" />
+
       <div className="page">
         <div className="swap-card">
           <div className="swap-header">
@@ -282,118 +217,56 @@ export default function App() {
           </div>
 
           <form onSubmit={handleSubmit(onSubmit)} className="swap-form">
-            <div className="panel">
-              <div className="panel-top">
-                <span>Amount to send</span>
-                {fromTokenData && (
-                  <span className="usd-hint">
-                    {amountInput
-                      ? formatUsd(numericAmount * fromTokenData.price)
-                      : "$0.00"}
-                  </span>
-                )}
-              </div>
-
-              <div className="panel-main">
-                <div className="amount-input-wrap">
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    placeholder="0.00"
-                    value={amountInput}
-                    onChange={handleAmountChange}
-                    onBlur={handleAmountBlur}
-                    className={`amount-input ${
-                      errors.amount ? "input-error" : ""
-                    }`}
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                </div>
-
-                <TokenSelect
-                  tokens={tokens.filter((token) => token.currency !== toToken)}
-                  value={fromToken}
-                  onChange={setFromToken}
-                />
-              </div>
-
-              {errors.amount ? (
-                <p className="error-text">{errors.amount.message}</p>
-              ) : (
-                <p className="helper-text">
-                  Max {formatNumber(MAX_INPUT_VALUE)}.
-                </p>
-              )}
-            </div>
+            <SwapPanel
+              title="Amount to send"
+              usdHint={
+                fromTokenData && amountInput
+                  ? formatUsd(numericAmount * fromTokenData.price)
+                  : "$0.00"
+              }
+              helperText={`Max ${formatNumber(MAX_INPUT_VALUE)}.`}
+              errorText={errors.amount?.message}
+              inputValue={amountInput}
+              onInputChange={handleAmountChange}
+              onInputBlur={handleAmountBlur}
+              tokens={availableFromTokens}
+              selectedToken={resolvedFromToken}
+              onTokenChange={setFromToken}
+              hasError={!!errors.amount}
+            />
 
             <div className="swap-action-row">
               <button
                 type="button"
                 className="swap-icon-button"
-                onClick={swapTokens}
+                onClick={handleSwapDirection}
                 aria-label="Swap token direction"
               >
                 ⇅
               </button>
             </div>
 
-            <div className="panel">
-              <div className="panel-top">
-                <span>Amount to receive</span>
-                {toTokenData && (
-                  <span className="usd-hint">
-                    {outputAmount
-                      ? formatUsd(outputAmount * toTokenData.price)
-                      : "$0.00"}
-                  </span>
-                )}
-              </div>
+            <SwapPanel
+              title="Amount to receive"
+              usdHint={
+                toTokenData && outputAmount
+                  ? formatUsd(outputAmount * toTokenData.price)
+                  : "$0.00"
+              }
+              helperText="Estimated amount based on latest available prices"
+              inputValue={outputAmount ? formatTokenAmount(outputAmount) : ""}
+              readOnly
+              tokens={availableToTokens}
+              selectedToken={resolvedToToken}
+              onTokenChange={setToToken}
+            />
 
-              <div className="panel-main">
-                <input
-                  type="text"
-                  value={outputAmount ? formatTokenAmount(outputAmount) : ""}
-                  readOnly
-                  placeholder="0.00"
-                  className="amount-input readonly"
-                />
-
-                <TokenSelect
-                  tokens={tokens.filter(
-                    (token) => token.currency !== fromToken
-                  )}
-                  value={toToken}
-                  onChange={setToToken}
-                />
-              </div>
-
-              <p className="helper-text">
-                Estimated amount based on latest available prices
-              </p>
-            </div>
-
-            <div className="summary">
-              <div className="summary-row">
-                <span>Rate</span>
-                <span>
-                  1 {fromToken} = {rate ? formatRate(rate) : "0"} {toToken}
-                </span>
-              </div>
-
-              <div className="summary-row">
-                <div className="link-row">
-                  <a
-                    href={PRICE_URL}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="price-link"
-                  >
-                    Price Link
-                  </a>
-                </div>
-              </div>
-            </div>
+            <SwapSummary
+              fromToken={resolvedFromToken}
+              toToken={resolvedToToken}
+              rateText={rate ? formatRate(rate) : "0"}
+              priceUrl={PRICE_URL}
+            />
 
             <button
               type="submit"
@@ -403,13 +276,13 @@ export default function App() {
                 isSubmitting ||
                 !amountInput ||
                 !!errors.amount ||
-                fromToken === toToken
+                resolvedFromToken === resolvedToToken
               }
             >
               {loading ? "Loading prices..." : "Confirm Swap"}
             </button>
 
-            {fromToken === toToken && (
+            {resolvedFromToken === resolvedToToken && (
               <p className="error-text center">
                 Please choose two different tokens
               </p>
@@ -419,163 +292,64 @@ export default function App() {
       </div>
 
       {isConfirmModalOpen && (
-        <div className="modal-overlay">
-          <div className="modal-card">
-            <p className="modal-eyebrow">Review swap</p>
-            <h2 className="modal-title">Confirm your swap</h2>
-
-            <div className="modal-summary">
-              <div className="modal-summary-row">
-                <span>You pay</span>
-                <strong>
-                  {formatTokenAmount(Number(amountInput || 0))} {fromToken}
-                </strong>
-              </div>
-
-              <div className="modal-summary-row">
-                <span>You receive</span>
-                <strong>
-                  {formatTokenAmount(outputAmount)} {toToken}
-                </strong>
-              </div>
-
-              <div className="modal-summary-row">
-                <span>Rate</span>
-                <strong>
-                  1 {fromToken} = {rate ? formatRate(rate) : "0"} {toToken}
-                </strong>
-              </div>
-
-              <div className="modal-summary-row">
-                <span>Estimated value</span>
-                <strong>
-                  {fromTokenData
-                    ? formatUsd(Number(amountInput || 0) * fromTokenData.price)
-                    : "$0.00"}
-                </strong>
-              </div>
-            </div>
-
-            <div className="modal-actions">
-              <button
-                type="button"
-                className="modal-secondary-button"
-                onClick={() => setIsConfirmModalOpen(false)}
-                disabled={isProcessingSwap}
-              >
-                Cancel
-              </button>
-
-              <button
-                type="button"
-                className="modal-primary-button"
-                onClick={handleConfirmSwap}
-                disabled={isProcessingSwap}
-              >
-                {isProcessingSwap ? "Processing..." : "Confirm Swap"}
-              </button>
-            </div>
-          </div>
-        </div>
+        <SwapModal
+          eyebrow="Review swap"
+          title="Confirm your swap"
+          rows={[
+            {
+              label: "You pay",
+              value: `${formatTokenAmount(
+                Number(amountInput || 0)
+              )} ${resolvedFromToken}`,
+            },
+            {
+              label: "You receive",
+              value: `${formatTokenAmount(outputAmount)} ${resolvedToToken}`,
+            },
+            {
+              label: "Rate",
+              value: `1 ${resolvedFromToken} = ${
+                rate ? formatRate(rate) : "0"
+              } ${resolvedToToken}`,
+            },
+            {
+              label: "Estimated value",
+              value: fromTokenData
+                ? formatUsd(Number(amountInput || 0) * fromTokenData.price)
+                : "$0.00",
+            },
+          ]}
+          primaryText={isProcessingSwap ? "Processing..." : "Confirm Swap"}
+          secondaryText="Cancel"
+          onPrimaryClick={handleConfirmSwap}
+          onSecondaryClick={() => setIsConfirmModalOpen(false)}
+          primaryDisabled={isProcessingSwap}
+          secondaryDisabled={isProcessingSwap}
+        />
       )}
 
       {isCompletedModalOpen && (
-        <div className="modal-overlay">
-          <div className="modal-card completed">
-            <div className="success-badge">✓</div>
-            <p className="modal-eyebrow">Completed</p>
-            <h2 className="modal-title">Swap completed</h2>
-            <p className="modal-description">
-              Your swap has been successfully simulated.
-            </p>
-
-            <div className="modal-summary">
-              <div className="modal-summary-row">
-                <span>Swapped</span>
-                <strong>
-                  {formatTokenAmount(Number(amountInput || 0))} {fromToken}
-                </strong>
-              </div>
-
-              <div className="modal-summary-row">
-                <span>Received</span>
-                <strong>
-                  {formatTokenAmount(outputAmount)} {toToken}
-                </strong>
-              </div>
-            </div>
-
-            <div className="modal-actions single">
-              <button
-                type="button"
-                className="modal-primary-button"
-                onClick={handleCloseCompletedModal}
-              >
-                Done
-              </button>
-            </div>
-          </div>
-        </div>
+        <SwapModal
+          eyebrow="Completed"
+          title="Swap completed"
+          description="Your swap has been successfully simulated."
+          rows={[
+            {
+              label: "Swapped",
+              value: `${formatTokenAmount(
+                Number(amountInput || 0)
+              )} ${resolvedFromToken}`,
+            },
+            {
+              label: "Received",
+              value: `${formatTokenAmount(outputAmount)} ${resolvedToToken}`,
+            },
+          ]}
+          primaryText="Done"
+          onPrimaryClick={handleCloseCompletedModal}
+          completed
+        />
       )}
     </>
-  );
-}
-
-type TokenSelectProps = {
-  tokens: TokenOption[];
-  value: string;
-  onChange: (value: string) => void;
-};
-
-function TokenSelect({ tokens, value, onChange }: TokenSelectProps) {
-  const [iconErrorMap, setIconErrorMap] = useState<Record<string, boolean>>({});
-
-  const selectedToken = tokens.find((token) => token.currency === value);
-  const hasIconError = selectedToken
-    ? iconErrorMap[selectedToken.currency]
-    : false;
-
-  return (
-    <div className="token-select-wrapper">
-      <div className="token-preview">
-        {selectedToken ? (
-          <>
-            {!hasIconError ? (
-              <img
-                key={selectedToken.currency}
-                src={selectedToken.icon}
-                alt={selectedToken.currency}
-                className="token-icon"
-                onError={() => {
-                  setIconErrorMap((prev) => ({
-                    ...prev,
-                    [selectedToken.currency]: true,
-                  }));
-                }}
-              />
-            ) : (
-              <div className="token-icon-fallback">
-                {selectedToken.currency.slice(0, 1)}
-              </div>
-            )}
-            <span>{selectedToken.currency}</span>
-          </>
-        ) : (
-          <span>Select</span>
-        )}
-      </div>
-
-      <select
-        className="token-select"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-      >
-        {tokens.map((token) => (
-          <option key={token.currency} value={token.currency}>
-            {token.currency}
-          </option>
-        ))}
-      </select>
-    </div>
   );
 }

@@ -1,4 +1,4 @@
-import { MAX_DECIMALS, MAX_INPUT_LENGTH, MAX_INPUT_VALUE } from "./App";
+import { MAX_DECIMALS, MAX_INPUT_LENGTH, MAX_INPUT_VALUE } from "./constants";
 
 const formatNumber = (
   value: number,

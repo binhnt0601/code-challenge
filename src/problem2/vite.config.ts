@@ -4,6 +4,7 @@ import path from "path";
 
 export default defineConfig({
   plugins: [react()],
+  base: "/code-challenge/",
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "src"),
